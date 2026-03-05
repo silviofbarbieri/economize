@@ -1,9 +1,13 @@
 export const config = { maxDuration: 30 };
 
-// OpenRouter: usa Llama 3.2 Vision gratuito com fallback para o roteador free
-// Compatível com OpenAI SDK — sem custo, sem cartão
-const OR_MODEL = 'meta-llama/llama-3.2-11b-vision-instruct:free';
-const OR_FALLBACK = 'openrouter/free'; // seleciona qualquer modelo free com visão
+// Ordem de tentativa: roteador automático free → modelos com visão confirmados gratuitos
+const MODELS = [
+  'openrouter/free',                        // seleciona automaticamente qualquer free com visão
+  'google/gemma-3-12b-it:free',             // Gemma 3 12B — multimodal, gratuito
+  'qwen/qwen2.5-vl-32b-instruct:free',      // Qwen 2.5 VL 32B — excelente OCR
+  'mistralai/mistral-small-3.1-24b-instruct:free', // Mistral Small 3.1 — visão
+  'google/gemma-3-27b-it:free',             // Gemma 3 27B — maior e mais preciso
+];
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -15,7 +19,7 @@ export default async function handler(req, res) {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     return res.status(500).json({
-      error: 'OPENROUTER_API_KEY não configurada. Crie conta gratuita em openrouter.ai, gere uma chave e adicione nas variáveis de ambiente do Vercel.'
+      error: 'OPENROUTER_API_KEY não configurada. Crie conta gratuita em openrouter.ai, vá em Keys → Create Key e adicione nas variáveis de ambiente do Vercel.'
     });
   }
 
@@ -38,10 +42,8 @@ Regras:
 - Inclua embalagem/quantidade no nome (ex: "Arroz Tio João 5kg")
 - Se preço por kg, inclua "(por kg)" no nome
 - Capitalize os nomes adequadamente
-- Se não for jornal de ofertas, retorne {"store":"${storeName}","products":[]}
-- Responda APENAS com o JSON, nada mais`;
+- Responda APENAS com o JSON, absolutamente nada mais`;
 
-  // Monta o content com imagem
   const imageUrl = imageType === 'url'
     ? imageData
     : `data:image/jpeg;base64,${imageData}`;
@@ -54,10 +56,9 @@ Regras:
     ]
   }];
 
-  // Tenta modelo principal, depois fallback
-  const modelsToTry = [OR_MODEL, OR_FALLBACK];
+  let lastError = 'Todos os modelos falharam.';
 
-  for (const model of modelsToTry) {
+  for (const model of MODELS) {
     try {
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
@@ -75,45 +76,52 @@ Regras:
         })
       });
 
-      if (!response.ok) {
-        const errText = await response.text();
-        let msg = `OpenRouter erro ${response.status}`;
-        try { msg = JSON.parse(errText).error?.message || msg; } catch {}
-        // Se for rate limit no modelo principal, tenta fallback
-        if (response.status === 429 && model !== OR_FALLBACK) continue;
-        return res.status(response.status).json({ error: msg });
-      }
-
       const data = await response.json();
-      const rawText = data.choices?.[0]?.message?.content || '';
 
-      if (!rawText) {
-        if (model !== OR_FALLBACK) continue;
-        return res.status(422).json({ error: 'IA não retornou texto. Tente imagem mais clara e nítida.' });
+      // Erros que justificam tentar próximo modelo
+      if (!response.ok) {
+        const msg = data?.error?.message || `HTTP ${response.status}`;
+        lastError = msg;
+        console.log(`[${model}] falhou: ${msg}`);
+        continue;
       }
 
+      // Modelo retornou erro interno (ex: no endpoints)
+      if (data?.error) {
+        lastError = data.error.message || JSON.stringify(data.error);
+        console.log(`[${model}] erro: ${lastError}`);
+        continue;
+      }
+
+      const rawText = data.choices?.[0]?.message?.content || '';
+      if (!rawText) { lastError = 'Resposta vazia.'; continue; }
+
+      // Parse JSON
       let parsed;
       try {
         const clean = rawText.replace(/```json|```/g, '').trim();
         const match = clean.match(/\{[\s\S]*\}/);
         parsed = JSON.parse(match ? match[0] : clean);
       } catch {
-        if (model !== OR_FALLBACK) continue;
-        return res.status(422).json({ error: 'JSON inválido na resposta. Tente imagem mais nítida.', raw: rawText.slice(0, 400) });
+        lastError = 'JSON inválido na resposta.';
+        continue;
       }
 
+      // Normaliza
       if (!Array.isArray(parsed.products)) parsed.products = [];
       parsed.products = parsed.products
         .filter(p => p.name && parseFloat(p.price) > 0)
         .map(p => ({ name: String(p.name).trim(), price: parseFloat(p.price) }));
 
+      // Sucesso!
       return res.status(200).json({ ...parsed, model_used: model });
 
     } catch (err) {
-      if (model !== OR_FALLBACK) continue;
-      return res.status(500).json({ error: err.message });
+      lastError = err.message;
+      console.log(`[${model}] exceção: ${err.message}`);
+      continue;
     }
   }
 
-  return res.status(500).json({ error: 'Todos os modelos falharam. Tente novamente em instantes.' });
+  return res.status(500).json({ error: `Falha em todos os modelos. Último erro: ${lastError}` });
 }
