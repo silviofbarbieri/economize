@@ -633,20 +633,20 @@ async function processFile(file) {
     else if(fname.includes('confiança')||fname.includes('confianca')) store='Confiança';
     else if(fname.includes('atacadao')||fname.includes('atacadão')) store='Atacadão';
 
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    const resp = await fetch('/api/scan', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
-        model:'claude-sonnet-4-20250514', max_tokens:1000,
-        messages:[{ role:'user', content:[
-          { type:'image', source:{ type:'base64', media_type:mt, data:base64 } },
-          { type:'text', text:`Analise esta imagem de encarte de supermercado. Extraia TODOS os produtos e preços visíveis. Responda APENAS com JSON array: [{"product":"nome produto com tamanho","category":"categoria","price":0.00}]\nCategorias: Café, Bebidas, Laticínios, Carnes, Hortifruti, Limpeza, Padaria, Outros. Sem texto adicional, apenas o JSON.` }
-        ]}]
-      })
+      body: JSON.stringify({ imageData: base64, imageType: 'base64', storeName: store })
     });
+    if (!resp.ok) {
+      const errData = await resp.json().catch(()=>({}));
+      throw new Error(errData.error || `HTTP ${resp.status}`);
+    }
     const data = await resp.json();
-    const txt = (data.content||[]).map(c=>c.text||'').join('');
     setStep(1,true); setStep(2,false);
-    let extracted = parseJSON(txt);
+    // /api/scan returns { store, products: [{name, price}] }
+    let extracted = Array.isArray(data.products)
+      ? data.products.map(p => ({ product: p.name, price: p.price, category: guessCategory(p.name) }))
+      : [];
     setStep(2,true); setStep(3,false);
     const today = new Date().toISOString().split('T')[0];
     let added = 0;
@@ -668,10 +668,13 @@ async function processFile(file) {
   } catch(err) {
     console.error(err);
     overlay.classList.remove('show');
-    const today = new Date().toISOString().split('T')[0];
-    fallbackAdd('Carrefour', today);
-    db.scans=(db.scans||0)+1; saveDB(db);
-    toast('⚠️ Erro na IA — dados de exemplo adicionados', 'error');
+    const msg = err.message || 'Erro desconhecido';
+    // Se for erro de chave não configurada, mostrar instrução
+    if (msg.includes('GEMINI_API_KEY')) {
+      toast('🔑 Configure GEMINI_API_KEY no Vercel (aistudio.google.com/app/apikey)', 'error');
+    } else {
+      toast(`⚠️ Erro na IA: ${msg.slice(0,80)}`, 'error');
+    }
     renderCompare(); renderHome();
   }
   document.getElementById('fileInput').value='';
@@ -684,6 +687,19 @@ function fallbackAdd(store, date) {
     {product:'Refrigerante 2L',category:'Bebidas',price:+(9.00*(0.9+Math.random()*.2)).toFixed(2)},
     {product:'Arroz Tipo 1 5kg',category:'Outros',price:+(22.50*(0.9+Math.random()*.2)).toFixed(2)},
   ].forEach(i => db.entries.push({id:Math.random().toString(36).slice(2),emoji:EMOJI_MAP[i.category]||'🛒',store,date,source:'ai',...i}));
+}
+
+// ── CATEGORY GUESSER ──
+function guessCategory(name) {
+  const n = name.toLowerCase();
+  if (n.includes('café') || n.includes('cafe') || n.includes('nescafé')) return 'Café';
+  if (n.includes('leite') || n.includes('iogurte') || n.includes('queijo') || n.includes('manteiga') || n.includes('requeijão')) return 'Laticínios';
+  if (n.includes('refrigerante') || n.includes('suco') || n.includes('água') || n.includes('cerveja') || n.includes('vinho') || n.includes('guaraná')) return 'Bebidas';
+  if (n.includes('frango') || n.includes('carne') || n.includes('bife') || n.includes('linguiça') || n.includes('presunto') || n.includes('bacon')) return 'Carnes';
+  if (n.includes('maçã') || n.includes('banana') || n.includes('tomate') || n.includes('alface') || n.includes('cenoura') || n.includes('batata')) return 'Hortifruti';
+  if (n.includes('sabão') || n.includes('detergente') || n.includes('desinfetante') || n.includes('amaciante') || n.includes('limpeza')) return 'Limpeza';
+  if (n.includes('pão') || n.includes('bolo') || n.includes('biscoito') || n.includes('bolacha') || n.includes('torrada')) return 'Padaria';
+  return 'Outros';
 }
 
 // ── UTILS ──
