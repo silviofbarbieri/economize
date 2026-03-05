@@ -670,8 +670,8 @@ async function processFile(file) {
     overlay.classList.remove('show');
     const msg = err.message || 'Erro desconhecido';
     // Se for erro de chave não configurada, mostrar instrução
-    if (msg.includes('GEMINI_API_KEY')) {
-      toast('🔑 Configure GEMINI_API_KEY no Vercel (aistudio.google.com/app/apikey)', 'error');
+    if (msg.includes('OPENROUTER_API_KEY')) {
+      toast('🔑 Configure OPENROUTER_API_KEY no Vercel (openrouter.ai → Keys)', 'error');
     } else {
       toast(`⚠️ Erro na IA: ${msg.slice(0,80)}`, 'error');
     }
