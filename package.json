@@ -1,0 +1,9 @@
+{
+  "name": "ofertaradar",
+  "version": "1.0.0",
+  "description": "Comparador de preços de supermercados com IA",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  }
+}
